@@ -1,80 +1,117 @@
 # Learning When to Read
 
-Cost-aware arXiv paper classification with supervised NLP models and a reinforcement learning policy for selective abstract reading.
+Reinforcement learning for selective context use in transformer-based scientific text categorization.
 
-## Project Summary
+This repository accompanies the report **"Learning When to Read: Reinforcement Learning for Selective Context Use in Transformer-Based Scientific Text Categorization"**. The project studies arXiv primary-category classification as a cost-aware two-stage problem:
 
-This project studies whether an NLP classifier can predict arXiv primary categories accurately while avoiding unnecessary abstract processing. The work has two stages:
+1. Train supervised classifiers with either titles only or titles plus abstracts.
+2. Train a policy-gradient reinforcement learning controller that decides when an abstract is worth reading.
 
-1. Compare supervised classifiers under two input settings: title-only and title-plus-abstract.
-2. Train a reinforcement learning policy that decides when the abstract should be read, using confidence features from the title-only model.
+The controller observes confidence features from the title-only model and chooses between keeping the cheap title-only prediction or querying the higher-context title-plus-abstract model. The goal is to retain much of the accuracy benefit of abstracts while avoiding unnecessary long-input processing.
 
-The dataset contains 6000 recent arXiv papers from six categories:
+## Headline Results
 
-- `cs.AI`
-- `cs.CL`
-- `cs.CV`
-- `cs.LG`
-- `cs.NE`
-- `stat.ML`
+The dataset contains the most recent arXiv papers collected on May 21, 2026 from six primary categories. The final test set has 900 papers.
 
-## Latest Results
 
-Best supervised classifier:
+| System                      | Abstract use | Test accuracy | Test macro F1 | Notes                         |
+| --------------------------- | ------------ | ------------- | ------------- | ----------------------------- |
+| SciBERT, title + abstract   | 100.0%       | 0.752         | 0.750         | Best supervised classifier    |
+| SciBERT, title only         | 0.0%         | 0.696         | 0.696         | Best title-only classifier    |
+| RL selective-reading policy | 15.2%        | 0.723         | 0.720         | Saves 84.8% of abstract reads |
 
-- SciBERT with title + abstract
-- Test accuracy: `0.752`
-- Test macro F1: `0.750`
 
-Best title-only classifier:
+The RL policy reaches an average reward of `0.701` with an abstract-reading cost of `0.15`. Compared with always reading abstracts, it gives up `0.029` accuracy while saving most abstract processing.
 
-- SciBERT with title only
-- Test accuracy: `0.696`
-- Test macro F1: `0.696`
+The full supervised comparison also includes TF-IDF + Linear SVM, DistilBERT, and MiniLM. Abstracts improve every model, but the gain is not uniform: SciBERT gains `0.054` macro F1 from adding abstracts, while TF-IDF + Linear SVM gains `0.108` and MiniLM gains `0.163`. This supports the selective-reading formulation: abstracts help on some papers, but they are not always necessary.
 
-Adaptive RL policy:
+## Dataset
 
-- Abstract usage: `15.2%`
-- Test accuracy: `0.723`
-- Test macro F1: `0.720`
-- Average reward: `0.701`
-- Abstract reads saved vs always reading abstracts: `84.8%`
+The dataset is balanced by construction: `1000` papers per category, `6000` papers total.
+
+Target categories:
+
+- `cs.AI` - Artificial Intelligence
+- `cs.CL` - Computation and Language
+- `cs.CV` - Computer Vision and Pattern Recognition
+- `cs.LG` - Machine Learning
+- `cs.NE` - Neural and Evolutionary Computing
+- `stat.ML` - Machine Learning in Statistics
+
+Each row contains a paper ID, title, abstract, primary category, and publication metadata. The processed data is split with stratification:
+
+
+| Split      | Papers | Papers per category |
+| ---------- | ------ | ------------------- |
+| Train      | 4200   | 700                 |
+| Validation | 900    | 150                 |
+| Test       | 900    | 150                 |
+
+
+Cached data is included under `data/`, so the notebook can run from local files without calling the arXiv API again.
+
+## Method Summary
+
+The supervised stage compares:
+
+- TF-IDF + Linear SVM with unigram and bigram features
+- SciBERT: `allenai/scibert_scivocab_uncased`
+- DistilBERT: `distilbert-base-uncased`
+- MiniLM: `microsoft/MiniLM-L12-H384-uncased`
+
+Each transformer is fine-tuned twice:
+
+- `title`: title-only input, truncated to 64 tokens
+- `title_abstract`: title plus abstract input, truncated to 256 tokens
+
+The RL stage uses SciBERT for both roles because it achieves strongest metrics for the collected dataset. The policy state contains the six title-only class probabilities plus four confidence summaries: top-1 probability, top-2 probability, probability margin, and normalized entropy. The policy chooses whether to use the title-only prediction or pay the read abstract cost and use the title-plus-abstract prediction.
 
 ## Repository Structure
 
 ```text
 .
-├── main.ipynb                         # Main experiment notebook
-├── requirements.txt                   # Python dependencies
-├── scripts/
-│   ├── download_arxiv_dataset.py      # Resumable arXiv API downloader
-│   └── parse_arxiv_articles.ipynb
-├── data/
-│   ├── raw/                           # Cached raw arXiv data
-│   ├── processed/                     # Cleaned dataset
-│   └── splits/                        # Train/validation/test splits
-├── results/
-│   ├── figures/                       # Report figures
-│   └── tables/                        # Metrics and diagnostics
-└── report/
-    ├── main.tex                       # LaTeX report source
-    ├── lit.bib                        # Bibliography
-    └── main.pdf                       # Compiled report
+|-- main.ipynb                         # End-to-end experiment notebook
+|-- requirements.txt                   # Python dependencies
+|-- scripts/
+|   |-- download_arxiv_dataset.py      # Resumable official arXiv API downloader
+|   `-- download_arxiv_dataset_test_notebook.ipynb
+|-- data/
+|   |-- raw/
+|   |   |-- arxiv_1000_per_category.csv
+|   |   `-- arxiv_1000_per_category_progress.json
+|   |-- processed/
+|   |   `-- arxiv_processed.csv
+|   `-- splits/
+|       |-- train.csv
+|       |-- validation.csv
+|       `-- test.csv
+|-- results/
+|   |-- checkpoints/                   # Fine-tuned transformer checkpoints
+|   |-- figures/                       # Report plots
+|   `-- tables/                        # Metrics, diagnostics, and summaries
+|-- report/
+|   |-- main.tex                       # LaTeX report source
+|   |-- lit.bib                        # Bibliography
+|   `-- main.pdf                       # Compiled report
+|-- LICENSE
+`-- README.md
 ```
 
 ## Setup
 
-Create and activate a Python environment, then install dependencies:
+Create an environment and install dependencies:
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
 The experiments use PyTorch and Hugging Face Transformers. A CUDA GPU is recommended for rerunning transformer fine-tuning.
 
-## Dataset
+## Recreating the Dataset
 
-The cached dataset is already stored under `data/`. If the raw CSV is missing, it can be downloaded again with:
+The cached raw CSV is already available at `data/raw/arxiv_1000_per_category.csv`. If it needs to be recreated, run:
 
 ```bash
 python scripts/download_arxiv_dataset.py \
@@ -84,7 +121,7 @@ python scripts/download_arxiv_dataset.py \
   --categories cs.CL cs.LG cs.CV cs.AI cs.NE stat.ML
 ```
 
-The downloader uses the official arXiv API, queries one category at a time, sorts by submitted date, and stores progress after each page.
+The downloader queries one category at a time, sorts by submitted date, keeps only papers whose primary category matches the requested category, and stores progress after each page.
 
 ## Running Experiments
 
@@ -96,17 +133,22 @@ main.ipynb
 
 The notebook:
 
-- loads or downloads the arXiv dataset
-- preprocesses and stratifies the data
-- trains/evaluates TF-IDF + Linear SVM
+- loads cached data or invokes the downloader if needed
+- preprocesses the dataset and writes stratified splits
+- trains and evaluates the TF-IDF + Linear SVM baseline
 - fine-tunes SciBERT, DistilBERT, and MiniLM
-- trains the RL policy over title-only confidence features
-- writes result tables to `results/tables/`
-- writes figures to `results/figures/`
+- trains the RL selective-reading policy
+- writes tables to `results/tables/`
+- writes plots to `results/figures/`
+- stores transformer checkpoints under `results/checkpoints/`
 
 ## Report
 
-The final report source is in `report/main.tex`.
+The final report source is:
+
+```text
+report/main.tex
+```
 
 To compile it:
 
@@ -123,11 +165,16 @@ report/main.pdf
 
 ## Main Artifacts
 
-Useful outputs:
+Key result files:
 
 - `results/tables/baseline_results.csv`
 - `results/tables/rl_results.csv`
 - `results/tables/final_summary.md`
+- `results/tables/abstract_gain_diagnostics.csv`
+- `results/tables/threshold_validation_test_diagnostics.csv`
+- `results/tables/classification_reports.json`
 - `results/figures/best_model_confusion_matrix.png`
 - `results/figures/accuracy_vs_abstract_usage.png`
-- `report/main.pdf`
+- `results/figures/rl_cost_sweep_accuracy_reward.png`
+
+Model checkpoints are generated under `results/checkpoints/transformers/`.
