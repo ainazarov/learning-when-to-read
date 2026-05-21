@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model checkpoints and large local training artifacts (keep results/ layout via .gitkeep)
+results/*
+!results/.gitkeep
+!results/checkpoints/
+results/checkpoints/*
+!results/checkpoints/.gitkeep
+!results/figures/
+results/figures/*
+!results/figures/.gitkeep
+!results/tables/
+results/tables/*
+!results/tables/.gitkeep
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# LaTeX report
+/report/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+
+# Local/editor files
+.DS_Store
+Thumbs.db
+
+# Windows Zone.Identifier (mark files downloaded from the internet)
+*:Zone.Identifier
+*:Zone.Identifier*
+.vscode/
+.idea/
+

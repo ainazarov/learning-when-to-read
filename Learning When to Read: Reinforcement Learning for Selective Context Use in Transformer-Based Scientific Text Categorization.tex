@@ -1,0 +1,228 @@
+\documentclass{article}
+\usepackage{amsmath,amssymb}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\setlength{\emergencystretch}{2em}
+
+\title{Learning When to Read: Reinforcement Learning for Selective Context Use in Transformer-Based Scientific Text Categorization}
+\author{Andrei Nazarov}
+\date{May 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This work studies transformer-based scientific text categorization and selective context use as a two-stage problem. First, we compare supervised models for assigning arXiv primary categories under two input settings: title-only and title-plus-abstract. Second, we train a reinforcement learning policy that decides when the abstract should be processed as additional context. We construct a dataset of the most recent arXiv papers (as of May 21, 2026) from six categories and evaluate a classical machine-learning baseline together with three transformer encoders we fine-tuned on the dataset. The highest-performing supervised model is SciBERT with title-plus-abstract input, reaching 0.752 test accuracy and 0.750 macro F1, a SOTA result for the collected dataset (as of May 21, 2026). In the second stage of this work, we propose the policy-gradient RL controller approach that observes confidence features from the title-only model and chooses whether to keep the title-only prediction or query the title-plus-abstract model. The learned policy reads abstracts for 15.2\% of test papers, saves 84.8\% of abstract reads relative to always reading abstracts, and reaches 0.723 test accuracy. These results indicate that confidence information from a title-only model can guide selective use of additional context only when it is likely to improve categorization, and thus save the compute time.
+The repository of the project is available at \url{https://github.com/ainazarov/learning-when-to-read}.
+\end{abstract}
+
+\section{Introduction}
+
+Scientific document classification is commonly performed with the richest text representation available at inference time. In the arXiv setting, this usually means using both the title and the abstract. Abstracts provide methodological details, task descriptions, and domain terminology that may not appear in the title, so they can improve category prediction. At the same time, they substantially increase sequence length, memory consumption, and inference latency. This creates a practical trade-off: when the title alone is sufficiently informative, processing the abstract may add cost without improving the decision.
+
+The research direction in this work is twofold. First, we perform supervised model selection for arXiv category classification by comparing classical and transformer-based models under two input settings: title-only and title-plus-abstract. This stage establishes which classifier should be used for low-cost prediction and which classifier provides the strongest higher-context prediction. Second, we study whether the resulting title--abstract trade-off can be handled adaptively. We frame the problem as a cost-aware decision task in which a reinforcement learning policy observes the title-only model's confidence features and decides whether to keep the title-only prediction or pay an abstract-reading cost and use the title-plus-abstract prediction.
+
+Our contribution is an end-to-end experimental pipeline for selective scientific text classification. We collect and preprocess a balanced arXiv dataset, train several supervised baselines, and use the highest-performing supervised models to construct a reinforcement learning environment. The final system is evaluated not only by classification quality, but also by the rate at which it processes abstracts for additional context.
+
+\section{Related Work}
+
+\subsection{Text Classification and Scientific Documents}
+
+Topic classification is a long-standing application of statistical NLP. Sparse lexical representations such as TF-IDF remain effective for document classification because topic labels are often strongly associated with category-specific terminology \cite{salton1988term}. Linear Support Vector Machines are also a standard competitive baseline for text categorization, especially in high-dimensional sparse feature spaces \cite{cortes1995support,joachims1998text}. For this reason, TF-IDF with a Linear SVM is used as the main classical competitor in our experiments.
+
+Transformer encoders changed text classification by replacing sparse lexical matching with contextual representations. The Transformer architecture introduced self-attention as the central sequence modeling mechanism \cite{vaswani2017attention}, and BERT showed that bidirectional masked-language-model pretraining can be fine-tuned successfully for many downstream NLP tasks \cite{devlin2019bert}. Later general-purpose encoders such as RoBERTa improved BERT-style pretraining by changing the training recipe and using more data \cite{liu2019roberta}, while ALBERT reduced parameter redundancy through factorized embeddings and cross-layer parameter sharing \cite{lan2020albert}. These models illustrate two major directions in transformer research: improving representation quality and reducing the cost of large pretrained encoders.
+
+Scientific paper classification also raises the question of domain mismatch. General-domain encoders are trained mostly on broad web and book corpora, whereas arXiv abstracts contain technical terminology, formulas, abbreviations, and domain-specific phrase patterns. Domain-specific pretraining has been shown to help in specialized text domains; BioBERT adapts BERT to biomedical text \cite{lee2020biobert}, and SciBERT is pretrained on scientific papers with a scientific-domain vocabulary \cite{beltagy2019scibert}. Work on domain-adaptive pretraining further shows that continued pretraining on in-domain text can improve downstream performance \cite{gururangan2020dont}. Since our dataset consists of scientific papers, SciBERT is therefore the most natural high-capacity transformer baseline.
+
+In addition, we include DistilBERT and MiniLM to to provide a more comprehensive comparison of transformer-based models. DistilBERT uses knowledge distillation to obtain a smaller and faster BERT-like model \cite{sanh2019distilbert}. MiniLM distills self-attention behavior to create a compact encoder with lower inference cost \cite{wang2020minilm}. 
+
+\subsection{Selective and Cost-Aware Computation}
+
+The second part of the project is related to selective prediction and adaptive computation. Selective classification studies systems that do not treat every input identically, but instead make decisions based on confidence or expected risk \cite{geifman2017selective}. Adaptive computation methods similarly try to allocate more computation to difficult examples and less computation to easy ones; Adaptive Computation Time is a well-known example of this idea in neural networks \cite{graves2016adaptive}. 
+
+The reinforcement learning formulation uses a policy-gradient method inspired by REINFORCE \cite{williams1992reinforce}. Reinforcement learning is appropriate here because the decision has a discrete action, an explicit cost, and a task reward. The policy receives confidence information from a title-only classifier and is rewarded for correct classification while being penalized for abstract usage. Thus the method can be viewed as a learned cost-aware controller over supervised NLP models.
+
+\section{Model Description}
+
+\subsection{Approach Overview}
+
+The proposed approach is developed as a three-stage pipeline. First, supervised classifiers are trained under two input conditions. The title-only condition contains only the paper title and represents the low-cost prediction path. The title-plus-abstract condition concatenates the title and abstract with a separator token and represents the higher-context prediction path. Second, the strongest validation models from these two conditions are selected. Third, a reinforcement learning controller is trained to decide, for each paper, whether the low-cost title prediction is sufficient or whether the system should use the higher-context prediction.
+
+This design separates representation learning from decision learning. The supervised classifiers learn category boundaries from text, while the RL controller learns an input-acquisition policy from model confidence features. The evaluation therefore has two levels: first we compare NLP classifiers and input settings, and then we compare decision policies for using the selected classifiers.
+
+\subsection{Supervised Classifiers}
+
+The classical baseline is a TF-IDF vectorizer followed by a Linear SVM. The vectorizer uses unigram and bigram features, Unicode accent stripping, sublinear term frequency, a minimum document frequency of 2, and a maximum of 50,000 features. This baseline provides a strong non-neural reference point for lexical topic classification and tests how much of the category signal can be captured from surface terms alone.
+
+The transformer pool contains three pretrained encoders selected to represent different accuracy--efficiency trade-offs. SciBERT is the domain-specific model and is expected to perform well because its pretraining corpus and vocabulary are closer to arXiv text. DistilBERT is a compressed BERT-style model, so it tests whether a smaller general-domain encoder can preserve enough semantic information for this task. MiniLM is another compact encoder based on attention distillation and is included as an even lighter transformer alternative. Each transformer is fine-tuned twice: once on titles and once on title-plus-abstract inputs. The title-only models estimate how well the task can be solved with limited text, while the title-plus-abstract models estimate the value of additional context. Transformer inputs are truncated to 64 tokens for titles and 256 tokens for title-plus-abstract examples.
+
+\subsection{Adaptive Policy}
+
+The adaptive stage is built on top of the selected supervised models. For paper \(i\), let \(x_i^T\) be the title input, \(x_i^{T+A}\) be the title-plus-abstract input, and \(y_i\) be the gold category. The title-only classifier \(f_T\) produces class probabilities \(p_i^T=f_T(x_i^T)\), while the title-plus-abstract classifier \(f_A\) produces the higher-context prediction. We denote their predicted labels as
+\[
+\hat{y}_i^T=\arg\max_k p_{i,k}^T,
+\qquad
+\hat{y}_i^A=\arg\max_k f_A(x_i^{T+A})_k .
+\]
+In the final run, SciBERT is selected for both roles according to validation macro F1.
+
+The reinforcement learning policy does not receive raw text. Its state is a 10-dimensional numeric description of the title-only model's output. The first six dimensions are the title-only probabilities for the six arXiv categories. The remaining four dimensions summarize confidence: the largest probability, the second-largest probability, the margin between them, and the normalized entropy of the probability distribution. Entropy is computed as
+\[
+H(p_i^T) =
+-\frac{1}{\log 6}\sum_{k=1}^{6}p_{i,k}^T\log p_{i,k}^T .
+\]
+
+The policy chooses between two actions:
+\[
+a_i =
+\begin{cases}
+0, & \text{use the title-only prediction}, \\
+1, & \text{read the abstract and use the title-plus-abstract prediction}.
+\end{cases}
+\]
+The reward is defined as a two-case function, where \(\mathbb{1}[\cdot]\) is 1 when its condition is true and 0 otherwise:
+\[
+R_i(a_i) =
+\begin{cases}
+\mathbb{1}\!\left[\hat{y}_i^T=y_i\right], & a_i=0, \\
+\mathbb{1}\!\left[\hat{y}_i^A=y_i\right] - c, & a_i=1,
+\end{cases}
+\qquad c=0.15.
+\]
+The first case gives reward for a correct title-only prediction. The second case gives reward for a correct title-plus-abstract prediction, but subtracts the abstract-processing cost.
+The policy is a two-hidden-layer multilayer perceptron trained with a REINFORCE-style objective. At test time, the selected action is the one with the highest policy probability.
+
+For interpretation, the learned policy is later evaluated against fixed decision rules that use the same selected supervised models: always use the title-only prediction, always use the title-plus-abstract prediction, or read the abstract only when title-only confidence falls below a threshold.
+
+\section{Dataset}
+
+\subsection{Collection Procedure}
+
+The dataset was collected from the official arXiv API \cite{arxivapi} on May 21, 2026.
+The downloader queries one category at a time using the arXiv category filter \texttt{cat:<category>}, sorts papers by submitted date in descending order, and retrieves pages of 100 entries. This produces a most recent-paper snapshot of arXiv articles. 
+
+The dataset consists of the most recent arXiv papers from each of six computer science and statistics categories. Each paper contributes a title, abstract, publication metadata, and primary arXiv category label. The six target categories are \texttt{cs.AI} (Artificial Intelligence), \texttt{cs.CL} (Computation and Language), \texttt{cs.CV} (Computer Vision and Pattern Recognition), \texttt{cs.LG} (Machine Learning), \texttt{cs.NE} (Neural and Evolutionary Computing), and \texttt{stat.ML} (Machine Learning in Statistics). For each category we keep 1000 papers, giving 6000 papers in total.
+
+\subsection{Task Formulation}
+
+The supervised task is six-way single-label classification. For each paper \(i\), the model receives either the title \(x_i^T\) or the title-plus-abstract input \(x_i^{T+A}\), and predicts one primary category \(y_i \in \{\texttt{cs.AI}, \texttt{cs.CL}, \texttt{cs.CV}, \texttt{cs.LG}, \texttt{cs.NE}, \texttt{stat.ML}\}\). The main comparison asks how much performance is gained when the abstract is added to the title.
+
+The adaptive task extends this formulation with a decision about input acquisition. The system first observes only title-derived confidence features. It must then choose whether to output the title-only prediction or process the abstract and use the title-plus-abstract prediction. This makes the final objective cost-aware: a good system should maximize classification quality while minimizing unnecessary abstract usage.
+
+\subsection{Fields and Preprocessing}
+
+Each example contains a paper id, title, abstract, primary category, publication date, and update date. The primary category is taken from the arXiv Atom metadata field rather than inferred from all listed categories, so each paper contributes exactly one label. The preprocessing step normalizes whitespace, removes duplicate papers by arXiv id, drops rows with missing titles or abstracts, and keeps only the six target primary categories.
+
+The final dataset is balanced by construction, which reduces the effect of class priors when comparing models. We split the data with stratification into 4200 training papers, 900 validation papers, and 900 test papers. Each split contains the same number of examples per class: 700 per category in training and 150 per category in both validation and test.
+
+\begin{table}[tbh]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+Split & Papers & Papers per category & Percentage \\
+\hline
+Train & 4200 & 700 & 70\% \\
+Validation & 900 & 150 & 15\% \\
+Test & 900 & 150 & 15\% \\
+\hline
+\end{tabular}
+\caption{Stratified split of the balanced arXiv dataset.}
+\label{tab:dataset}
+\end{table}
+
+\section{Experiments}
+
+\subsection{Metrics}
+
+We report accuracy, macro F1, weighted F1, macro precision, and macro recall. Macro F1 is emphasized because all categories should contribute equally to the evaluation. For the reinforcement learning comparison we also report abstract usage, average cost, and average reward.
+
+\subsection{Experimental Setup}
+
+The transformer models are trained for up to 4 epochs with AdamW, learning rate \(2 \times 10^{-5}\), weight decay 0.01, batch size 32, a linear learning-rate schedule with 10\% warmup, and early stopping patience of 2 epochs. The reinforcement learning controller is trained for 400 epochs with batch size 128, Adam learning rate \(10^{-3}\), entropy coefficient 0.5, and abstract read cost \(c=0.15\). Supervised models are trained on the training split and selected using validation performance. The reinforcement learning environment is constructed from validation-set supervised predictions. Its state contains the six title-only class probabilities and four confidence statistics: largest probability, second-largest probability, margin between them, and normalized entropy. Its action selects either the title prediction or the title-plus-abstract prediction; and its reward is computed from the true label and abstract cost. On the test split, it is compared against deterministic decision strategies: always use title, always use title plus abstract, and threshold rules that read the abstract when title-only confidence is below a fixed value.
+
+\subsection{Baselines and Comparison Structure}
+
+The first comparison level evaluates NLP classifiers directly. We compare TF-IDF + Linear SVM, DistilBERT, MiniLM, and SciBERT under both input modes: title-only and title-plus-abstract. This stage identifies the strongest classifiers.
+
+The second comparison level evaluates decision policies over the selected classifiers. The baselines are always-title, always-title-plus-abstract, and confidence thresholds from 0.50 to 0.90. A threshold policy reads the abstract when \(\max_k p_{i,k}^T < \tau\). These rules are useful reference points because they are deterministic, interpretable, and based on the same title-only confidence signal as the RL policy.
+
+\section{Results}
+
+Table~\ref{tab:supervised} shows the supervised test results. SciBERT with title-plus-abstract input is the highest-performing classifier, with 0.752 accuracy and 0.750 macro F1. The strongest title-only model is also SciBERT, with 0.696 accuracy and 0.696 macro F1. The 0.054 macro-F1 improvement indicates that abstracts provide useful information beyond titles, but the title-only score also shows that many examples can be classified without the longer input.
+
+\begin{table}[tbh]
+\centering
+\begin{tabular}{|l|l|c|c|}
+\hline
+Model & Input & Accuracy & Macro F1 \\
+\hline
+SciBERT & Title + abstract & 0.752 & 0.750 \\
+TF-IDF + Linear SVM & Title + abstract & 0.749 & 0.742 \\
+DistilBERT & Title + abstract & 0.717 & 0.709 \\
+SciBERT & Title & 0.696 & 0.696 \\
+DistilBERT & Title & 0.662 & 0.658 \\
+TF-IDF + Linear SVM & Title & 0.633 & 0.634 \\
+MiniLM & Title + abstract & 0.652 & 0.630 \\
+MiniLM & Title & 0.539 & 0.468 \\
+\hline
+\end{tabular}
+\caption{Supervised classification results on the test split.}
+\label{tab:supervised}
+\end{table}
+
+The abstract improves every model, but the magnitude of the gain differs. MiniLM gains 0.163 macro F1 from adding abstracts, TF-IDF + Linear SVM gains 0.108, SciBERT gains 0.054, and DistilBERT gains 0.052. The smaller transformer benefits most from the additional text, while SciBERT already extracts more category signal from titles. Comparison between the selected title-only and title-plus-abstract SciBERT predictions further supports the selective-reading formulation: 62.3\% of test examples are classified correctly by both models, 12.9\% are corrected only by the abstract model, 7.2\% are correct only with the title model, and 17.6\% are missed by both. Thus, reading the abstract is valuable for a subset of papers but is neither universally necessary nor universally helpful.
+
+\begin{figure}[tbh]
+\centering
+\includegraphics[width=0.85\linewidth]{../results/figures/best_model_confusion_matrix.png}
+\caption{Confusion matrix for the highest-performing supervised test model, SciBERT with title and abstract input.}
+\label{fig:confusion}
+\end{figure}
+
+\begin{figure}[tbh]
+\centering
+\includegraphics[width=0.85\linewidth]{../results/figures/accuracy_vs_abstract_usage.png}
+\caption{Accuracy versus abstract usage for the RL policy and threshold baselines.}
+\label{fig:usage}
+\end{figure}
+
+The confusion matrix in Fig.~\ref{fig:confusion} shows that the most difficult distinctions are semantically adjacent categories. The largest confusion pair is \texttt{cs.CL} predicted as \texttt{cs.AI}. Another major source of error is \texttt{cs.LG} confused with \texttt{stat.ML}, which is expected because both categories often contain machine learning papers with similar terminology.
+
+Table~\ref{tab:rl} summarizes results of RL approach for adaptive reading of article abstracts. Always using the abstract gives strong raw accuracy, but it pays the cost on every example. Always using the title has zero abstract cost but lower accuracy. The RL policy occupies the intended middle region of this trade-off: it reads only 15.2\% of abstracts, obtains 0.723 accuracy, and reaches the highest average reward of 0.701.
+
+\begin{table}[tbh]
+\centering
+\small
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+Method & Acc. & Macro F1 & Abs. use & Reward \\
+\hline
+RL Policy & 0.723 & 0.720 & 15.2\% & 0.701 \\
+Threshold 0.60 & 0.738 & 0.734 & 26.3\% & 0.698 \\
+Threshold 0.50 & 0.718 & 0.715 & 14.2\% & 0.696 \\
+Always Title & 0.696 & 0.696 & 0.0\% & 0.696 \\
+Threshold 0.70 & 0.748 & 0.743 & 38.8\% & 0.690 \\
+Threshold 0.80 & 0.749 & 0.745 & 51.1\% & 0.672 \\
+Threshold 0.90 & 0.756 & 0.752 & 65.3\% & 0.658 \\
+Always Title + Abs. & 0.752 & 0.750 & 100.0\% & 0.602 \\
+\hline
+\end{tabular}
+\caption{Decision policy results on the test split with abstract cost \(c=0.15\).}
+\label{tab:rl}
+\end{table}
+
+Figure~\ref{fig:usage} visualizes the cost-accuracy trade-off. Higher thresholds read more abstracts and tend to increase accuracy, but their reward declines once the abstract cost is considered. The RL policy is less accurate than aggressive threshold rules such as 0.80 or 0.90, but it saves most abstract reads and keeps reward high.
+
+\section{Conclusion}
+
+First, we built a solution that achieves state-of-the-art results on the categorization task for the collected dataset. We then proposed a cost-aware controller that adaptively decides when additional text should be processed. The supervised experiments show that abstracts improve classification quality: SciBERT accuracy increases from 0.696 using titles only to 0.752 using titles plus abstracts. We then use reinforcement learning to learn a policy that decides when to read the abstract based on the title-only model’s confidence features.
+
+On the test set, the learned policy reads abstracts for only 15.2\% of papers while reaching 0.723 accuracy. Compared with always reading abstracts, it saves 84.8\% of abstract reads with an accuracy gap of 0.029. The result is not intended to replace the highest-accuracy full-input classifier when accuracy is the only objective. Rather, it demonstrates a practical operating point for settings where inference cost matters. The important finding is that confidence information from a smaller context model can guide selective use of additional context when it is likely to improve classification.
+
+
+\bibliographystyle{apalike}
+\bibliography{lit}
+\end{document}
